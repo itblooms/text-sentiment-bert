@@ -1,11 +1,12 @@
-from transformers import AutoTokenizer, PreTrainedTokenizerBase, DataCollatorWithPadding
+from transformers import AutoTokenizer, DataCollatorWithPadding
 from datasets import load_dataset, Dataset, DatasetDict
-from torch.utils.data import DataLoader, Dataset as TorchDataset
+from torch.utils.data import DataLoader
 from typing import Tuple
-from src.types import DatasetType 
+import torch
+import transformers
 
 
-class HFDatasetWrapper(TorchDataset):
+class HFDatasetWrapper(torch.utils.data.Dataset):
     def __init__(self, hf_dataset):
         self.dataset = hf_dataset
 
@@ -15,14 +16,14 @@ class HFDatasetWrapper(TorchDataset):
     def __getitem__(self, index):
         return self.dataset[index]
 
-def load_tokenized_data(dataset_name: str, 
+def load_data(dataset_name: str, 
                         model_name: str,
                         batch_size: int,
                         num_workers: int
-                        ) -> Tuple[DataLoader, 
-                                   DataLoader,
-                                   DataLoader,
-                                   PreTrainedTokenizerBase]:
+                        ) -> Tuple[torch.utils.data.DataLoader, 
+                                   torch.utils.data.DataLoader,
+                                   torch.utils.data.DataLoader,
+                                   transformers.PreTrainedTokenizerBase]:
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     dataset = load_dataset(dataset_name)
     
