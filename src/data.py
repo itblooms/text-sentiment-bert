@@ -16,14 +16,17 @@ class HFDatasetWrapper(torch.utils.data.Dataset):
     def __getitem__(self, index):
         return self.dataset[index]
 
-def load_data(dataset_name: str, 
-                        model_name: str,
-                        batch_size: int,
-                        num_workers: int
-                        ) -> Tuple[torch.utils.data.DataLoader, 
-                                   torch.utils.data.DataLoader,
-                                   torch.utils.data.DataLoader,
-                                   transformers.PreTrainedTokenizerBase]:
+def load_data(
+        dataset_name: str, 
+        model_name: str,
+        batch_size: int,
+        num_workers: int
+) -> Tuple[
+    torch.utils.data.DataLoader, 
+    torch.utils.data.DataLoader,
+    torch.utils.data.DataLoader,
+    transformers.PreTrainedTokenizerBase
+]:
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     dataset = load_dataset(dataset_name)
     
