@@ -16,7 +16,7 @@ pip-delete-this-directory.txt
 sandbox.py
 
 # Models
-experiments/
+sandbox/
 models/
 mlruns/
 *.bin
