@@ -38,7 +38,7 @@ def train_step(model: torch.nn.Module,
 
         preds = torch.argmax(logits, dim=1)
         train_accuracy = Accuracy(task="multiclass", 
-                             num_classes=config.model["num_classes"])
+                             num_classes=config.data["num_classes"])
         train_acc += train_accuracy(preds, labels)
 
     return train_loss / len(train_data), train_acc / len(train_data)
@@ -64,7 +64,7 @@ def val_step(model: torch.nn.Module,
 
             preds = torch.argmax(logits, dim=1)
             val_accuracy = Accuracy(task="multiclass", 
-                               num_classes=config.model["num_classes"])
+                               num_classes=config.data["num_classes"])
             val_acc += val_accuracy(preds, labels)
 
     return val_loss / len(val_data), val_acc / len(val_data)
