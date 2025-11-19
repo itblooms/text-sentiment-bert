@@ -6,9 +6,9 @@ from tqdm import tqdm
 
 
 def create_model(
-        model_name: str, 
-        num_labels: int, 
-        device: torch.device
+    model_name: str, 
+    num_labels: int, 
+    device: torch.device
 ) -> torch.nn.Module:
     model = AutoModelForSequenceClassification.from_pretrained(
         model_name, 
@@ -17,14 +17,15 @@ def create_model(
     return model
 
 def train_step(
-        model: torch.nn.Module,
-        train_data: torch.utils.data.DataLoader,
-        optimizer: torch.optim.Optimizer,
-        loss_fn: torch.nn.Module, 
-        device: torch.device,
-        num_classes: int
+    model: torch.nn.Module,
+    train_data: torch.utils.data.DataLoader,
+    optimizer: torch.optim.Optimizer,
+    loss_fn: torch.nn.Module, 
+    device: torch.device,
+    num_classes: int,
+    epoch: int,
+    accum_steps: int = 0
 ) -> Tuple[float, float]:
-    
     model.train()
     train_loss, train_acc = 0, 0
 
@@ -36,25 +37,25 @@ def train_step(
         logits = model(input_ids, attention_mask=attention_mask).logits
         loss = loss_fn(logits, labels)
         train_loss += loss.item()
-        optimizer.zero_grad()
         loss.backward()
+        if accum_steps > 0 and epoch % accum_steps != 0:
+            continue
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
+        optimizer.zero_grad()
 
         preds = torch.argmax(logits, dim=1)
-        train_accuracy = Accuracy(task="multiclass", 
-                             num_classes=num_classes)
+        train_accuracy = Accuracy(task="multiclass", num_classes=num_classes)
         train_acc += train_accuracy(preds, labels)
-
     return train_loss / len(train_data), train_acc / len(train_data)
 
 def val_step(
-        model: torch.nn.Module,
-        val_data: torch.utils.data.DataLoader,
-        loss_fn: torch.nn.Module,
-        device: torch.device,
-        num_classes: int
+    model: torch.nn.Module,
+    val_data: torch.utils.data.DataLoader,
+    loss_fn: torch.nn.Module,
+    device: torch.device,
+    num_classes: int
 ) -> Tuple[float, float]:
-    
     model.eval()
     val_loss, val_acc = 0, 0
 
@@ -69,23 +70,23 @@ def val_step(
             val_loss += loss.item()
 
             preds = torch.argmax(logits, dim=1)
-            val_accuracy = Accuracy(task="multiclass", 
-                               num_classes=num_classes)
+            val_accuracy = Accuracy(task="multiclass", num_classes=num_classes)
             val_acc += val_accuracy(preds, labels)
-
     return val_loss / len(val_data), val_acc / len(val_data)
         
 def train_model(
-        model: torch.nn.Module,
-        train_data: torch.utils.data.DataLoader,
-        val_data: torch.utils.data.DataLoader,
-        optimizer: torch.optim.Optimizer,
-        loss_fn: torch.nn.Module,
-        device: torch.device,
-        epochs: int,
-        num_classes: int
+    model: torch.nn.Module,
+    train_data: torch.utils.data.DataLoader,
+    val_data: torch.utils.data.DataLoader,
+    optimizer: torch.optim.Optimizer,
+    loss_fn: torch.nn.Module,
+    device: torch.device,
+    epochs: int,
+    num_classes: int,
+    accum_steps: int = 0
 ) -> Dict[str, List[float]]:
-        
+    if accum_steps > 0 and accum_steps > epochs:
+        raise ValueError("'accum_steps' must be lower than 'epochs'")
     results = {
         "train_loss": [],
         "train_acc": [],
@@ -93,24 +94,29 @@ def train_model(
         "val_acc": []
     }
     for epoch in tqdm(range(epochs)):
-        train_loss, train_acc = train_step(model=model,
-                                           train_data=train_data,
-                                           optimizer=optimizer,
-                                           loss_fn=loss_fn,
-                                           device=device,
-                                           num_classes=num_classes)
-        val_loss, val_acc = val_step(model=model,
-                                     val_data=val_data,
-                                     loss_fn=loss_fn,
-                                     device=device,
-                                     num_classes=num_classes)
-
-        print(f"Epoch:           | {epoch + 1}\n"
-              f"Train Loss:      | {train_loss:.3f}\n"
-              f"Train Accuracy:  | {train_acc:.3f}\n"
-              f"Val Loss:        | {val_loss:.3f}\n"
-              f"Val Accuracy:    | {val_acc:.3f}")
-        
+        train_loss, train_acc = train_step(
+            model=model,
+            train_data=train_data,
+            optimizer=optimizer,
+            loss_fn=loss_fn,
+            device=device,
+            num_classes=num_classes,
+            epoch=epoch,
+            accum_steps=accum_steps
+        )
+        val_loss, val_acc = val_step(
+            model=model,
+            val_data=val_data,
+            loss_fn=loss_fn,
+            device=device,
+            num_classes=num_classes
+        )
+        print(f"Epoch: {epoch + 1:>5}\n"
+              f"Train Loss: {train_loss:>5.3f}\n"
+              f"Train Accuracy: {train_acc:>5.3f}\n"
+              f"Val Loss: {val_loss:>5.3f}\n"
+              f"Val Accuracy: {val_acc:>5.3f}"
+        )
         results["train_loss"].append(train_loss)
         results["train_acc"].append(train_acc)
         results["val_loss"].append(val_loss)
