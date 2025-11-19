@@ -1,0 +1,15 @@
+---
+experiment_name: peft_head_n_layers
+
+model:
+  name: distilbert/distilbert-base-uncased
+  num_labels: 6
+
+dataset: dair-ai/emotion
+
+search_space:
+  epochs: [1, 3]
+  lr: [1e-5, 1e-3]
+  batch_size: [8, 16, 32]
+  n_layers: [0, 1, 2, 3, 4, 5]
+...
