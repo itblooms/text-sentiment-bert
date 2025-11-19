@@ -35,6 +35,7 @@ src/logs
 
 # Jupyter
 *.ipynb_checkpoints
+sandbox.ipynb
 
 #IDEs
 .vscode/
