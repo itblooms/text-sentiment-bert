@@ -9,6 +9,6 @@ dataset: dair-ai/emotion
 
 search_space:
   epochs: [1, 3]
-  lr: [1e-5, 1e-3]
+  lr: [1.0e-5, 1.0e-3]
   batch_size: [8, 16, 32]
 ...
