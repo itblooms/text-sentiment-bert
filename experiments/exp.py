@@ -5,12 +5,16 @@ from torch.optim import Adam
 import mlflow
 import copy
 from ray import tune
+from ray.tune import Tuner, TuneConfig
 from ray.air.integrations.mlflow import MLflowLoggerCallback
+from ray.tune.search.optuna import OptunaSearch
 from omegaconf import OmegaConf, DictConfig
 from argparse import ArgumentParser
 from src.train import create_model, train_model
 from src.data import load_data
 from typing import Dict, Any, List, Optional
+from peft import get_peft_model, LoraConfig, TaskType
+
 
 def parse_search_space(ss_dict: Dict[str, Any]) -> Dict[str, Any]:
     search_space = {}
@@ -50,8 +54,40 @@ def fft_train(
     )
     return results
 
-def train_lora():
-    pass
+def train_lora(
+    model: torch.nn.Module,
+    train_data: torch.utils.data.DataLoader,
+    val_data: torch.utils.data.DataLoader,
+    optimizer: torch.optim.Optimizer,
+    loss_fn: torch.nn.Module,
+    device: torch.device,
+    epochs: int,
+    num_classes: int,
+    lora_r: int,
+    accum_steps: int = 0
+):
+    lora_config = LoraConfig(
+        task_type=TaskType.SEQ_CLS,
+        inference_mode=False,
+        r=lora_r,
+        lora_alpha=2*lora_r,
+        lora_dropout=0.1,
+        init_lora_weights="gaussian",
+        target_modules=["q_lin", "v_lin"]
+    )
+    lora_model = get_peft_model(model, lora_config) # type: ignore
+    results = train_model(
+        model=model,
+        train_data=train_data,
+        val_data=val_data,
+        optimizer=optimizer,
+        loss_fn=loss_fn,
+        device=device,
+        epochs=epochs,
+        num_classes=num_classes,
+        accum_steps=accum_steps
+    )
+    return results
 
 def train_adapter():
     pass
@@ -99,10 +135,6 @@ def train_fn(
     num_workers: int,
     accum_steps: int = 0,
     ) -> None:
-    supported_methods = ["fft", "peft_lora", "peft_adapter", "peft_head_n_layers"]
-    if base_cfg.experiment_name not in supported_methods:
-            raise ValueError("Unsupported fine-tuning method. Please use one of these "
-                             "'fft', 'peft/head_n_layers', 'peft/adapter', 'peft/lora'")
     model = copy.deepcopy(model)
     train_loader, val_loader, _, _ = load_data(
         model_name=base_cfg.model["name"], # type: ignore
@@ -135,7 +167,11 @@ def train_fn(
                 results = train_adapter
             case "peft_lora":
                 results = train_lora
-
+            case _:
+                raise ValueError("Unsupported fine-tuning method. Please use one of these "
+                                 "'fft', 'peft/head_n_layers', 'peft/adapter', 'peft/lora'")
+        mlflow.log_metrics(results) # type: ignore
+        tune.report(val_accuracy=results["val_acc"]) # type: ignore
 
 def main():
     parser = ArgumentParser()
@@ -144,12 +180,13 @@ def main():
     config = OmegaConf.load(args.config)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    num_workers = os.cpu_count() if os.cpu_count() is not None else 0 
+    num_workers = 1  # os.cpu_count() if os.cpu_count() is not None else 0 
     model = create_model(config.model["name"], config.model["num_labels"], device)
     loss_fn = nn.CrossEntropyLoss()
 
     search_space = parse_search_space(config.search_space)
-    tuner = tune.Tuner(
+    optuna_search = OptunaSearch(metric="val_accuracy", mode="max")
+    tuner = Tuner(
         tune.with_parameters(
             train_fn,
             base_cfg=config,
@@ -158,6 +195,10 @@ def main():
             device=device,
             num_workers=num_workers
         ),
-        param_space=search_space
+        param_space=search_space,
+        tune_config=TuneConfig(
+            search_alg=optuna_search,
+            num_samples=100,
+        )
     )
     tuner.fit()
