@@ -12,7 +12,8 @@ def create_model(
 ) -> torch.nn.Module:
     model = AutoModelForSequenceClassification.from_pretrained(
         model_name, 
-        num_labels=num_labels
+        num_labels=num_labels,
+        device_map="auto"
     ).to(device)
     return model
 
@@ -45,8 +46,8 @@ def train_step(
         optimizer.zero_grad()
 
         preds = torch.argmax(logits, dim=1)
-        train_accuracy = Accuracy(task="multiclass", num_classes=num_classes)
-        train_acc += train_accuracy(preds, labels)
+        train_accuracy = Accuracy(task="multiclass", num_classes=num_classes).to(device)
+        train_acc += train_accuracy(preds, labels).item()
     return train_loss / len(train_data), train_acc / len(train_data)
 
 def val_step(
@@ -70,8 +71,8 @@ def val_step(
             val_loss += loss.item()
 
             preds = torch.argmax(logits, dim=1)
-            val_accuracy = Accuracy(task="multiclass", num_classes=num_classes)
-            val_acc += val_accuracy(preds, labels)
+            val_accuracy = Accuracy(task="multiclass", num_classes=num_classes).to(device)
+            val_acc += val_accuracy(preds, labels).item()
     return val_loss / len(val_data), val_acc / len(val_data)
         
 def train_model(
@@ -111,11 +112,11 @@ def train_model(
             device=device,
             num_classes=num_classes
         )
-        print(f"Epoch: {epoch + 1:>5}\n"
-              f"Train Loss: {train_loss:>5.3f}\n"
-              f"Train Accuracy: {train_acc:>5.3f}\n"
-              f"Val Loss: {val_loss:>5.3f}\n"
-              f"Val Accuracy: {val_acc:>5.3f}"
+        print(f"{"Epoch:":<20} {epoch + 1:>10}\n"
+              f"{"Train Loss:":<20} {train_loss:>10.3f}\n"
+              f"{"Train Accuracy:":<20} {train_acc:>10.3f}\n"
+              f"{"Val Loss:":<20} {val_loss:10.3f}\n"
+              f"{"Val Accuracy:":<20} {val_acc:>10.3f}"
         )
         results["train_loss"].append(train_loss)
         results["train_acc"].append(train_acc)
