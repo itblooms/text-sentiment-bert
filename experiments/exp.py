@@ -1,14 +1,15 @@
 import os
+import yaml
 import torch
 import torch.nn as nn
 from torch.optim import Adam
 import mlflow
 import copy
+import ray
 from ray import tune
 from ray.tune import Tuner, TuneConfig
 from ray.air.integrations.mlflow import MLflowLoggerCallback
 from ray.tune.search.optuna import OptunaSearch
-from omegaconf import OmegaConf, DictConfig
 from argparse import ArgumentParser
 from src.train import create_model, train_model
 from src.data import load_data
@@ -128,77 +129,94 @@ def train_head_n_layers(
 def train_fn(
     config: Dict[str, Any],
     *,
-    base_cfg: DictConfig,
+    base_cfg: Dict[str, Any],
     model: torch.nn.Module, 
     loss_fn: torch.nn.Module,
     device: torch.device,
     num_workers: int,
     accum_steps: int = 0,
     ) -> None:
-    model = copy.deepcopy(model)
+    model = copy.deepcopy(model).to(device)
     train_loader, val_loader, _, _ = load_data(
-        model_name=base_cfg.model["name"], # type: ignore
-        dataset_name=base_cfg.dataset,
+        model_name=base_cfg["model"]["name"],
+        dataset_name=base_cfg["dataset"],
         batch_size=config["batch_size"],
-        num_workers=num_workers # type: ignore
+        num_workers=num_workers
     )
     optimizer = Adam(params=model.parameters(), lr=config["lr"])
 
-    mlflow.set_experiment(base_cfg.experiment_name)
+    mlflow.set_experiment(base_cfg["experiment_name"])
     run_name = "_".join(f"{k}={v}" for k, v in config.items())
     with mlflow.start_run(run_name=run_name) as run:
         mlflow.log_params(config)
-        match base_cfg.experiment_name:
+        match base_cfg["experiment_name"]:
             case "fft":
                 results = fft_train(
                     model=model, train_data=train_loader, val_data=val_loader,
                     optimizer=optimizer, loss_fn=loss_fn, device=device, 
-                    epochs=config["epochs"], num_classes=base_cfg.model["num_classes"],
+                    epochs=config["epochs"], num_classes=base_cfg["model"]["num_classes"],
                     accum_steps=accum_steps
                 )
             case "peft_head_n_layers":
                 results = train_head_n_layers(
                     model=model, train_data=train_loader, val_data=val_loader,
                     optimizer=optimizer, loss_fn=loss_fn, device=device, 
-                    epochs=config["epochs"], num_classes=base_cfg.model["num_classes"],
+                    epochs=config["epochs"], num_classes=base_cfg["model"]["num_classes"],
                     n_layers=config["n_layers"], accum_steps=accum_steps
                 )
-            case "peft_adapter":
-                results = train_adapter
+            # case "peft_adapter":
+                # results = train_adapter
             case "peft_lora":
-                results = train_lora
+                results = train_lora(
+                    model=model, train_data=train_loader, val_data=val_loader,
+                    optimizer=optimizer, loss_fn=loss_fn, device=device,
+                    epochs=config["epochs"], num_classes=base_cfg["model"]["num_labels"],
+                    lora_r=config["r"], accum_steps=accum_steps
+                )
             case _:
                 raise ValueError("Unsupported fine-tuning method. Please use one of these "
                                  "'fft', 'peft/head_n_layers', 'peft/adapter', 'peft/lora'")
-        mlflow.log_metrics(results) # type: ignore
-        tune.report(val_accuracy=results["val_acc"]) # type: ignore
+        mlflow.log_metric("train_loss", results["train_loss"][-1])
+        mlflow.log_metric("val_accuracy", results["val_acc"][-1])
+        tune.report({"val_accuracy": results["val_acc"][-1]})
 
 def main():
     parser = ArgumentParser()
-    parser.add_argument("--config", type="str")
+    parser.add_argument("--config", type=str)
     args = parser.parse_args()
-    config = OmegaConf.load(args.config)
+    with open(args.config, "r") as file:
+        config = yaml.safe_load(file)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     num_workers = 1  # os.cpu_count() if os.cpu_count() is not None else 0 
-    model = create_model(config.model["name"], config.model["num_labels"], device)
+    model = create_model(config["model"]["name"], config["model"]["num_labels"], device)
     loss_fn = nn.CrossEntropyLoss()
 
-    search_space = parse_search_space(config.search_space)
-    optuna_search = OptunaSearch(metric="val_accuracy", mode="max")
+    ray.init(num_gpus=1)
+    search_space = parse_search_space(config["search_space"])
+    optuna_search = OptunaSearch()
     tuner = Tuner(
-        tune.with_parameters(
-            train_fn,
-            base_cfg=config,
-            model=model,
-            loss_fn=loss_fn,
-            device=device,
-            num_workers=num_workers
+        tune.with_resources(
+            tune.with_parameters(
+                train_fn,
+                base_cfg=config,
+                model=model,
+                loss_fn=loss_fn,
+                device=device,
+                num_workers=num_workers
+            ),
+            resources={"cpu": 4, "gpu": 1}
         ),
         param_space=search_space,
         tune_config=TuneConfig(
             search_alg=optuna_search,
-            num_samples=100,
+            metric="val_accuracy", 
+            mode="max",
+            num_samples=10,
+            max_concurrent_trials=3
         )
     )
     tuner.fit()
+
+if __name__ == "__main__":
+    main()
