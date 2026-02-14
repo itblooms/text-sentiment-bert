@@ -1,14 +1,12 @@
-import os
 import yaml
+from pathlib import Path
 import torch
 import torch.nn as nn
 from torch.optim import Adam
-import mlflow
-import copy
 import ray
 from ray import tune
-from ray.tune import Tuner, TuneConfig
-from ray.air.integrations.mlflow import MLflowLoggerCallback
+from ray.tune import Tuner, TuneConfig, RunConfig
+from ray.air.integrations.mlflow import setup_mlflow
 from ray.tune.search.optuna import OptunaSearch
 from argparse import ArgumentParser
 from src.train import create_model, train_model
@@ -130,13 +128,16 @@ def train_fn(
     config: Dict[str, Any],
     *,
     base_cfg: Dict[str, Any],
-    model: torch.nn.Module, 
     loss_fn: torch.nn.Module,
     device: torch.device,
     num_workers: int,
     accum_steps: int = 0,
-    ) -> None:
-    model = copy.deepcopy(model).to(device)
+) -> None:
+    model = create_model(
+        model_name=base_cfg["model"]["name"],
+        num_labels=base_cfg["model"]["num_labels"],
+        device=device
+    )
     train_loader, val_loader, _, _ = load_data(
         model_name=base_cfg["model"]["name"],
         dataset_name=base_cfg["dataset"],
@@ -144,41 +145,43 @@ def train_fn(
         num_workers=num_workers
     )
     optimizer = Adam(params=model.parameters(), lr=config["lr"])
-
-    mlflow.set_experiment(base_cfg["experiment_name"])
-    run_name = "_".join(f"{k}={v}" for k, v in config.items())
-    with mlflow.start_run(run_name=run_name) as run:
-        mlflow.log_params(config)
-        match base_cfg["experiment_name"]:
-            case "fft":
-                results = fft_train(
-                    model=model, train_data=train_loader, val_data=val_loader,
-                    optimizer=optimizer, loss_fn=loss_fn, device=device, 
-                    epochs=config["epochs"], num_classes=base_cfg["model"]["num_classes"],
-                    accum_steps=accum_steps
-                )
-            case "peft_head_n_layers":
-                results = train_head_n_layers(
-                    model=model, train_data=train_loader, val_data=val_loader,
-                    optimizer=optimizer, loss_fn=loss_fn, device=device, 
-                    epochs=config["epochs"], num_classes=base_cfg["model"]["num_classes"],
-                    n_layers=config["n_layers"], accum_steps=accum_steps
-                )
-            # case "peft_adapter":
-                # results = train_adapter
-            case "peft_lora":
-                results = train_lora(
-                    model=model, train_data=train_loader, val_data=val_loader,
-                    optimizer=optimizer, loss_fn=loss_fn, device=device,
-                    epochs=config["epochs"], num_classes=base_cfg["model"]["num_labels"],
-                    lora_r=config["r"], accum_steps=accum_steps
-                )
-            case _:
-                raise ValueError("Unsupported fine-tuning method. Please use one of these "
-                                 "'fft', 'peft/head_n_layers', 'peft/adapter', 'peft/lora'")
-        mlflow.log_metric("train_loss", results["train_loss"][-1])
-        mlflow.log_metric("val_accuracy", results["val_acc"][-1])
-        tune.report({"val_accuracy": results["val_acc"][-1]})
+    mlflow = setup_mlflow(
+        config=config,
+        experiment_name=base_cfg["experiment_name"],
+        create_experiment_if_not_exists=True,
+        run_name="_".join(f"{k}={v}" for k, v in config.items()),
+        tracking_uri="http://127.0.0.1:5000"
+    )
+    match base_cfg["experiment_name"]:
+        case "fft":
+            results = fft_train(
+                model=model, train_data=train_loader, val_data=val_loader,
+                optimizer=optimizer, loss_fn=loss_fn, device=device, 
+                epochs=config["epochs"], num_classes=base_cfg["model"]["num_classes"],
+                accum_steps=accum_steps
+            )
+        case "peft_head_n_layers":
+            results = train_head_n_layers(
+                model=model, train_data=train_loader, val_data=val_loader,
+                optimizer=optimizer, loss_fn=loss_fn, device=device, 
+                epochs=config["epochs"], num_classes=base_cfg["model"]["num_classes"],
+                n_layers=config["n_layers"], accum_steps=accum_steps
+            )
+        # case "peft_adapter":
+            # results = train_adapter
+        case "peft_lora":
+            results = train_lora(
+                model=model, train_data=train_loader, val_data=val_loader,
+                optimizer=optimizer, loss_fn=loss_fn, device=device,
+                epochs=config["epochs"], num_classes=base_cfg["model"]["num_labels"],
+                lora_r=config["r"], accum_steps=accum_steps
+            )
+        case _:
+            raise ValueError("Unsupported fine-tuning method. Please use one of these "
+                             "'fft', 'peft/head_n_layers', 'peft/adapter', 'peft/lora'")
+    mlflow.log_metric("train_loss", results["train_loss"][-1])
+    mlflow.log_metric("val_accuracy", results["val_acc"][-1])
+    tune.report({"val_accuracy": results["val_acc"][-1]})
 
 def main():
     parser = ArgumentParser()
@@ -189,7 +192,6 @@ def main():
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     num_workers = 1  # os.cpu_count() if os.cpu_count() is not None else 0 
-    model = create_model(config["model"]["name"], config["model"]["num_labels"], device)
     loss_fn = nn.CrossEntropyLoss()
 
     ray.init(num_gpus=1)
@@ -200,7 +202,6 @@ def main():
             tune.with_parameters(
                 train_fn,
                 base_cfg=config,
-                model=model,
                 loss_fn=loss_fn,
                 device=device,
                 num_workers=num_workers
@@ -214,9 +215,14 @@ def main():
             mode="max",
             num_samples=10,
             max_concurrent_trials=3
+        ),
+        run_config=RunConfig(
+            name=config["experiment_name"],
+            storage_path=Path.cwd().parent.as_posix() + "/mlruns"
         )
     )
     tuner.fit()
+
 
 if __name__ == "__main__":
     main()
